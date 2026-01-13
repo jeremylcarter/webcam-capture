@@ -128,6 +128,13 @@ public class WebcamUpdater implements Runnable {
 	private final DelayCalculator delayCalculator;
 
 	/**
+	 * Reusable image task to reduce object allocation per frame.
+	 * Creating new task objects on every frame contributes to memory churn
+	 * and can accumulate references in thread-local storage on the atomic-processor thread.
+	 */
+	private WebcamGetImageTask reusableImageTask = null;
+
+	/**
 	 * Construct new webcam updater using DefaultDelayCalculator.
 	 * 
 	 * @param webcam the webcam to which updater shall be attached
@@ -158,7 +165,9 @@ public class WebcamUpdater implements Runnable {
 
 		if (running.compareAndSet(false, true)) {
 
-			image.set(new WebcamGetImageTask(Webcam.getDriver(), webcam.getDevice()).getImage());
+			// Initialize reusable task and get first image
+			reusableImageTask = new WebcamGetImageTask(Webcam.getDriver(), webcam.getDevice());
+			image.set(reusableImageTask.getImage());
 
 			executor = Executors.newSingleThreadScheduledExecutor(THREAD_FACTORY);
 			executor.execute(this);
@@ -183,6 +192,11 @@ public class WebcamUpdater implements Runnable {
 					return;
 				}
 			}
+
+			// Clear reusable task and cached image to allow garbage collection
+			// and prevent holding references that could cause memory retention issues.
+			reusableImageTask = null;
+			image.set(null);
 
 			LOG.debug("Webcam updater has been stopped");
 		} else {
@@ -218,10 +232,17 @@ public class WebcamUpdater implements Runnable {
 		assert driver != null;
 		assert device != null;
 
+		// Reuse image task to reduce object allocation per frame.
+		// This helps prevent native memory accumulation in thread-local storage
+		// on the atomic-processor thread.
+		if (reusableImageTask == null) {
+			reusableImageTask = new WebcamGetImageTask(driver, device);
+		}
+
 		boolean imageOk = false;
 		long t1 = System.currentTimeMillis();
 		try {
-			image.set(webcam.transform(new WebcamGetImageTask(driver, device).getImage()));
+			image.set(webcam.transform(reusableImageTask.getImage()));
 			imageNew = true;
 			imageOk = true;
 		} catch (WebcamException e) {

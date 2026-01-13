@@ -141,6 +141,23 @@ public class WebcamDefaultDevice implements WebcamDevice, BufferAccess, Runnable
 	 */
 	private volatile double fps = 0;
 
+	/**
+	 * Reusable byte array for image data to reduce per-frame allocations.
+	 * This helps prevent native memory accumulation in thread-local storage.
+	 */
+	private byte[] reusableImageBytes = null;
+
+	/**
+	 * Reusable heap ByteBuffer for getImageBytes() to avoid returning native-backed buffers.
+	 * Native ByteBuffers from BridJ can cause TLS memory leaks on long-running threads.
+	 */
+	private ByteBuffer reusableByteBuffer = null;
+
+	/**
+	 * Reusable NextFrameTask to reduce object allocation on each frame capture.
+	 */
+	private NextFrameTask reusableFrameTask = null;
+
 	protected WebcamDefaultDevice(Device device) {
 		this.device = device;
 		this.name = device.getNameStr();
@@ -226,7 +243,24 @@ public class WebcamDefaultDevice implements WebcamDevice, BufferAccess, Runnable
 
 		LOG.trace("Webcam device get buffer, read {} bytes", length);
 
-		return image.getByteBuffer(length);
+		// CRITICAL FIX: Copy native memory to heap buffer to prevent TLS memory leak.
+		// The native ByteBuffer from BridJ's getByteBuffer() is backed by native memory
+		// that accumulates in thread-local storage on the atomic-processor thread.
+		// By copying to a heap buffer and letting the native pointer go out of scope,
+		// we allow proper cleanup of native resources.
+
+		// Reuse or allocate heap buffer
+		if (reusableByteBuffer == null || reusableByteBuffer.capacity() < length) {
+			reusableByteBuffer = ByteBuffer.allocate(length);
+		}
+		reusableByteBuffer.clear();
+
+		// Get native buffer and copy to heap
+		ByteBuffer nativeBuffer = image.getByteBuffer(length);
+		reusableByteBuffer.put(nativeBuffer);
+		reusableByteBuffer.flip();
+
+		return reusableByteBuffer;
 	}
 
 	@Override
@@ -283,12 +317,23 @@ public class WebcamDefaultDevice implements WebcamDevice, BufferAccess, Runnable
 			return null;
 		}
 
-		byte[] bytes = new byte[size.width * size.height * 3];
-		byte[][] data = new byte[][] { bytes };
+		int length = size.width * size.height * 3;
 
-		buffer.get(bytes);
+		// Reuse byte array to reduce per-frame allocations and GC pressure.
+		// This also helps prevent native memory accumulation since we're not
+		// creating new backing arrays that could retain references to native buffers.
+		if (reusableImageBytes == null || reusableImageBytes.length != length) {
+			reusableImageBytes = new byte[length];
+		}
 
-		DataBufferByte dbuf = new DataBufferByte(data, bytes.length, OFFSET);
+		buffer.get(reusableImageBytes);
+
+		// Note: We still need to create new DataBufferByte, Raster, and BufferedImage
+		// per frame because BufferedImage doesn't support updating its backing data.
+		// However, the byte array reuse significantly reduces allocation overhead.
+		byte[][] data = new byte[][] { reusableImageBytes };
+
+		DataBufferByte dbuf = new DataBufferByte(data, reusableImageBytes.length, OFFSET);
 		WritableRaster raster = Raster.createWritableRaster(smodel, dbuf, null);
 
 		BufferedImage bi = new BufferedImage(cmodel, raster, false, null);
@@ -413,6 +458,12 @@ public class WebcamDefaultDevice implements WebcamDevice, BufferAccess, Runnable
 		LOG.debug("Closing webcam device");
 
 		grabber.stopSession();
+
+		// Clear reusable buffers to allow garbage collection and prevent
+		// holding references that could cause memory retention issues.
+		reusableImageBytes = null;
+		reusableByteBuffer = null;
+		reusableFrameTask = null;
 	}
 
 	@Override
@@ -475,7 +526,13 @@ public class WebcamDefaultDevice implements WebcamDevice, BufferAccess, Runnable
 			t2 = System.currentTimeMillis();
 		}
 
-		int result = new NextFrameTask(this).nextFrame();
+		// Reuse NextFrameTask to reduce object allocation per frame.
+		// Creating new task objects on every frame contributes to memory churn
+		// and can accumulate references in thread-local storage.
+		if (reusableFrameTask == null) {
+			reusableFrameTask = new NextFrameTask(this);
+		}
+		int result = reusableFrameTask.nextFrame();
 
 		t1 = t2;
 		t2 = System.currentTimeMillis();

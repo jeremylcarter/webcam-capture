@@ -22,8 +22,8 @@
       <version>${project.version}</version>
       <exclusions>
         <exclusion>
-          <artifactId>bridj</artifactId>
           <groupId>com.nativelibs4java</groupId>
+          <artifactId>bridj</artifactId>
         </exclusion>
       </exclusions>
     </dependency>
