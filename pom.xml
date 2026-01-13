@@ -51,9 +51,23 @@
   </issueManagement>
 
   <ciManagement>
-    <system>Travis CI</system>
-    <url>http://travis-ci.org/#!/sarxos/webcam-capture</url>
+    <system>GitHub Actions</system>
+    <url>https://github.com/sarxos/webcam-capture/actions</url>
   </ciManagement>
+
+  <!-- Override parent POM's distributionManagement to use GitHub Packages -->
+  <distributionManagement>
+    <repository>
+      <id>github</id>
+      <name>GitHub Packages</name>
+      <url>https://maven.pkg.github.com/jeremylcarter/webcam-capture</url>
+    </repository>
+    <snapshotRepository>
+      <id>github</id>
+      <name>GitHub Packages Snapshots</name>
+      <url>https://maven.pkg.github.com/jeremylcarter/webcam-capture</url>
+    </snapshotRepository>
+  </distributionManagement>
 
   <properties>
     <project.assembly.descriptor>../distribution.xml</project.assembly.descriptor>
