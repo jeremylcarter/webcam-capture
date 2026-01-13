@@ -197,6 +197,18 @@ public class Webcam {
 	private ExecutorService notificator = null;
 
 	/**
+	 * Reusable image task for synchronous mode to reduce object allocation per frame.
+	 * Creating new task objects on every frame contributes to memory churn
+	 * and can accumulate references in thread-local storage on the atomic-processor thread.
+	 */
+	private WebcamGetImageTask reusableImageTask = null;
+
+	/**
+	 * Reusable buffer task for getImageBytes() to reduce object allocation per frame.
+	 */
+	private WebcamGetBufferTask reusableBufferTask = null;
+
+	/**
 	 * Webcam class.
 	 *
 	 * @param device - device to be used as webcam
@@ -413,6 +425,11 @@ public class Webcam {
 					return false;
 				}
 			}
+
+			// Clear reusable tasks to allow garbage collection and prevent
+			// holding references that could cause memory retention issues.
+			reusableImageTask = null;
+			reusableBufferTask = null;
 
 			LOG.debug("Webcam {} has been closed", getName());
 
@@ -656,10 +673,17 @@ public class Webcam {
 			return updater.getImage();
 		} else {
 
+			// Reuse image task to reduce object allocation per frame.
+			// This helps prevent native memory accumulation in thread-local storage
+			// on the atomic-processor thread.
+			if (reusableImageTask == null) {
+				reusableImageTask = new WebcamGetImageTask(driver, device);
+			}
+
 			// get image
 
 			t1 = System.currentTimeMillis();
-			BufferedImage image = transform(new WebcamGetImageTask(driver, device).getImage());
+			BufferedImage image = transform(reusableImageTask.getImage());
 			t2 = System.currentTimeMillis();
 
 			if (image == null) {
@@ -726,9 +750,16 @@ public class Webcam {
 		// buffers, just convert image to RGB byte array
 
 		if (device instanceof BufferAccess) {
+			// Reuse buffer task to reduce object allocation per frame.
+			// This helps prevent native memory accumulation in thread-local storage
+			// on the atomic-processor thread.
+			if (reusableBufferTask == null) {
+				reusableBufferTask = new WebcamGetBufferTask(driver, device);
+			}
+
 			t1 = System.currentTimeMillis();
 			try {
-				return new WebcamGetBufferTask(driver, device).getBuffer();
+				return reusableBufferTask.getBuffer();
 			} finally {
 				t2 = System.currentTimeMillis();
 				if (device instanceof WebcamDevice.FPSSource) {
